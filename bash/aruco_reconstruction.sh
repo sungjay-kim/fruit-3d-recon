@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# ArUco 마커 통합 3D reconstruction 파이프라인
+# ArUco-integrated 3D reconstruction pipeline
 #
 # Usage:
 #   bash bash/aruco_reconstruction.sh [SAMPLE] [BRIGHT_FACTOR] [ANGLE_DELTA] [GPU_IDX]
 #
-# 흐름:
-#   1. generate_aruco_masks.py → sparse_masks/ (물체+마커 합성)
-#   2. masks/ ↔ sparse_masks/ 교체 → sparse reconstruction (마커 feature 포함)
-#   3. masks/ 복원
+# Flow:
+#   1. generate_aruco_masks.py → sparse_masks/ (object + marker composite)
+#   2. swap masks/ ↔ sparse_masks/ → sparse reconstruction (marker features included)
+#   3. restore masks/
 #   4. compute_aruco_scale.py → scale_factor.json
-#   5. dense reconstruction (물체만 마스크)
+#   5. dense reconstruction (object-only masks)
 #   6. apply_scale_to_ply.py → fused_scaled.ply
 set -eo pipefail
 
@@ -26,19 +26,19 @@ log() { echo "[$(date '+%H:%M:%S')] $*"; }
 elapsed() { echo "  ⏱ $(( $(date +%s) - $1 ))s"; }
 TOTAL_START=$(date +%s)
 
-# ── 전제 조건 확인 ──────────────────────────────────────────────────
+# ── Preconditions ───────────────────────────────────────────────────
 if [ ! -d "${RUN_DIR}/images" ]; then
-  echo "[ERROR] 이미지 폴더 없음: ${RUN_DIR}/images" >&2
+  echo "[ERROR] images folder not found: ${RUN_DIR}/images" >&2
   exit 1
 fi
 if [ ! -d "${RUN_DIR}/masks" ]; then
-  echo "[ERROR] 물체 마스크 폴더 없음: ${RUN_DIR}/masks" >&2
+  echo "[ERROR] object masks folder not found: ${RUN_DIR}/masks" >&2
   exit 1
 fi
 
 cd "$REPO_ROOT"
 
-# ── micromamba 환경 활성화 (colmap, cv2, open3d 모두 포함) ────────────
+# ── Activate micromamba env (colmap, cv2, open3d all included) ──────
 MAMBA_BIN="$HOME/micromamba/bin/micromamba"
 export MAMBA_ROOT_PREFIX="$HOME/micromamba"
 if [ -x "$MAMBA_BIN" ]; then
@@ -46,38 +46,38 @@ if [ -x "$MAMBA_BIN" ]; then
   micromamba activate colmap_env
 fi
 
-# ── Step 1: 원본 물체 마스크 보존 ─────────────────────────────────────
-# masks/ 가 오염되지 않도록 원본을 object_masks/로 한 번만 복사
+# ── Step 0: snapshot original object masks ──────────────────────────
+# Keep masks/ pristine by copying it once into object_masks/.
 if [ ! -d "${RUN_DIR}/object_masks" ]; then
-  log "[0/7] 원본 물체 마스크 보존 → object_masks/"
+  log "[0/7] Snapshot object masks → object_masks/"
   cp -r "${RUN_DIR}/masks" "${RUN_DIR}/object_masks"
 fi
 
-# ── Step 1: ArUco 마스크 + 합성 sparse 마스크 생성 ──────────────────
+# ── Step 1: generate ArUco + composite sparse masks ─────────────────
 T1=$(date +%s)
-log "[1/7] ArUco 마스크 및 sparse_masks/ 생성"
-# 항상 object_masks/를 기준으로 sparse_masks 생성 (오염 방지)
+log "[1/7] Generate ArUco masks and sparse_masks/"
+# Always derive sparse_masks from object_masks/ (avoid contamination).
 python3 scripts/generate_aruco_masks.py --sample "$SAMPLE" --object-masks-dir "${RUN_DIR}/object_masks"
 elapsed $T1
 
-# ── Step 2: sparse용 마스크 교체 ──────────────────────────────────────
-log "[2/7] masks/ ← sparse_masks/ (sparse용 마커 포함 마스크)"
+# ── Step 2: swap in sparse masks ────────────────────────────────────
+log "[2/7] masks/ ← sparse_masks/ (object + marker masks for sparse)"
 rm -rf "${RUN_DIR}/masks"
 cp -r "${RUN_DIR}/sparse_masks" "${RUN_DIR}/masks"
 
 # ── Step 3: Sparse Reconstruction ───────────────────────────────────
 T3=$(date +%s)
-log "[3/7] Sparse reconstruction (물체+마커 마스크 사용)"
+log "[3/7] Sparse reconstruction (object + marker masks)"
 bash bash/manual_relaxed_crosscam.sh "$SAMPLE" "$BRIGHT_FACTOR" "$ANGLE_DELTA"
 elapsed $T3
 
-# ── Step 4: dense용 마스크 복원 (물체만) ──────────────────────────────
-log "[4/7] masks/ ← object_masks/ (dense용 물체만 마스크)"
+# ── Step 4: restore object-only masks for dense ─────────────────────
+log "[4/7] masks/ ← object_masks/ (object-only masks for dense)"
 rm -rf "${RUN_DIR}/masks"
 cp -r "${RUN_DIR}/object_masks" "${RUN_DIR}/masks"
 
-# ── Best model 선택 ──────────────────────────────────────────────────
-log "Best sparse 모델 선택 중..."
+# ── Best model selection ────────────────────────────────────────────
+log "Selecting best sparse model..."
 best_model=0
 best_count=0
 for model_dir in "${SPARSE_OUT}"/*/; do
@@ -91,33 +91,33 @@ for model_dir in "${SPARSE_OUT}"/*/; do
     best_model=$model_idx
   fi
 done
-log "  사용할 모델: ${best_model} (등록 이미지 수: ${best_count})"
+log "  selected model: ${best_model} (registered images: ${best_count})"
 
-# ── Step 5: Scale Factor 계산 ────────────────────────────────────────
+# ── Step 5: Compute scale factor ────────────────────────────────────
 T5=$(date +%s)
-log "[5/6] ArUco scale factor 계산"
+log "[5/8] Compute ArUco scale factor"
 python3 scripts/compute_aruco_scale.py --sample "$SAMPLE" --model-idx "$best_model"
 elapsed $T5
 
 # ── Step 6: Dense Reconstruction ────────────────────────────────────
 T6=$(date +%s)
-log "[6/6] Dense reconstruction (물체만 마스크 사용)"
+log "[6/8] Dense reconstruction (object-only masks)"
 bash bash/dense.sh "$SAMPLE" "$best_model" "$GPU_IDX"
 elapsed $T6
 
-# ── Step 7: Scale 적용 ───────────────────────────────────────────────
+# ── Step 7: Apply scale ─────────────────────────────────────────────
 T7=$(date +%s)
-log "[7/6] Scale 적용 → fused_scaled.ply"
+log "[7/8] Apply scale → fused_scaled.ply"
 python3 scripts/apply_scale_to_ply.py --sample "$SAMPLE" --model-idx "$best_model"
 elapsed $T7
 
-# ── Step 8: 노이즈 제거 ──────────────────────────────────────────────
+# ── Step 8: Denoise ─────────────────────────────────────────────────
 T8=$(date +%s)
-log "[8/8] 노이즈 제거 → fused_scaled.ply (덮어쓰기)"
+log "[8/8] Denoise → overwrite fused_scaled.ply"
 python3 scripts/remove_noise_ply.py --run-dir "${RUN_DIR}" --dense-subdir "dense/manual_relaxed_${best_model}"
 elapsed $T8
 
-log "완료! 총 소요시간: $(( $(date +%s) - TOTAL_START ))s"
+log "Done! Total time: $(( $(date +%s) - TOTAL_START ))s"
 log "  fused.ply        → runs/${SAMPLE}/dense/manual_relaxed_${best_model}/fused.ply"
-log "  fused_scaled.ply → runs/${SAMPLE}/dense/manual_relaxed_${best_model}/fused_scaled.ply (노이즈 제거, 단위: m)"
+log "  fused_scaled.ply → runs/${SAMPLE}/dense/manual_relaxed_${best_model}/fused_scaled.ply (denoised, units: m)"
 log "  scale_factor     → runs/${SAMPLE}/scale_factor.json"

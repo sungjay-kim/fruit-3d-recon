@@ -1,8 +1,9 @@
 """
-ArUco 마커 생성 스크립트
-- 3cm x 3cm 마커 12개 (ID 0~11)
-- 기둥 4개 x 마커 3개 배치용
-- 인쇄 시 실제 크기 유지를 위해 DPI 설정 포함
+Generate ArUco markers for the rig.
+
+- 3cm x 3cm markers
+- Layout: 4 columns x 3 markers each (front/back) = 24 total
+- DPI is set so printed size matches the physical 3cm exactly
 """
 
 import cv2
@@ -13,12 +14,12 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 
 MARKER_SIZE_CM = 3.0
-MARKER_COUNT = 24  # 기둥 4개 x 높이 3개 x 앞뒤 2면
+MARKER_COUNT = 24  # 4 columns x 3 heights x 2 sides
 DPI = 300
-MARGIN_CM = 0.5  # 마커 주변 여백 (절단 가이드)
-WHITE_BORDER_CM = 0.3  # 마커 주변 흰색 테두리 (검은 배경 대비용)
+MARGIN_CM = 0.5  # cutting margin around each marker
+WHITE_BORDER_CM = 0.3  # white border around marker (for contrast against black panel)
 
-# ArUco dictionary (4x4, 50개 ID)
+# ArUco dictionary (4x4, 50 IDs)
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
 
 
@@ -27,7 +28,7 @@ def cm_to_px(cm, dpi=DPI):
 
 
 def generate_single_markers(output_dir: Path):
-    """개별 마커 PNG 파일 생성"""
+    """Save each marker as an individual PNG."""
     output_dir.mkdir(parents=True, exist_ok=True)
     aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
 
@@ -38,7 +39,7 @@ def generate_single_markers(output_dir: Path):
 
     for marker_id in range(MARKER_COUNT):
         marker_img = cv2.aruco.generateImageMarker(aruco_dict, marker_id, marker_px)
-        # 흰색 테두리 추가 (검은 기둥 대비용)
+        # add white border (for contrast on black panel)
         bordered = np.ones((total_px, total_px), dtype=np.uint8) * 255
         bordered[border_px:border_px + marker_px, border_px:border_px + marker_px] = marker_img
         filepath = output_dir / f"aruco_id{marker_id:02d}_{MARKER_SIZE_CM:.0f}cm.png"
@@ -47,14 +48,14 @@ def generate_single_markers(output_dir: Path):
 
 
 def generate_print_sheet(output_dir: Path):
-    """A4 인쇄용 시트 (모든 마커를 한 장에 배치)"""
+    """A4 print sheet (all markers on one page)."""
     aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
 
     marker_px = cm_to_px(MARKER_SIZE_CM)
     margin_px = cm_to_px(MARGIN_CM)
     cell_size = marker_px + margin_px * 2
 
-    # A4 크기 (21cm x 29.7cm)
+    # A4 size (21cm x 29.7cm)
     a4_w = cm_to_px(21.0)
     a4_h = cm_to_px(29.7)
 
@@ -76,7 +77,7 @@ def generate_print_sheet(output_dir: Path):
 
         sheet[y:y + marker_px, x:x + marker_px] = marker_img
 
-        # ID 라벨 추가
+        # add ID label
         label_y = y + marker_px + cm_to_px(0.3)
         if label_y < a4_h:
             cv2.putText(sheet, f"ID:{i}", (x, label_y),
@@ -88,7 +89,7 @@ def generate_print_sheet(output_dir: Path):
 
 
 def generate_pdf(output_dir: Path):
-    """A4 PDF 인쇄용 시트 (실제 크기 보장)"""
+    """A4 PDF print sheet (preserves physical size when printed at 100%)."""
     aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
     marker_px = cm_to_px(MARKER_SIZE_CM)
 
@@ -116,7 +117,7 @@ def generate_pdf(output_dir: Path):
             for local_idx, marker_id in enumerate(range(page_start, min(page_start + per_page, MARKER_COUNT))):
                 r, c = divmod(local_idx, cols)
 
-                # 마커 위치 (cm → figure 비율)
+                # marker position (cm → figure fraction)
                 x_cm = margin_cm + c * cell_w_cm + MARGIN_CM
                 y_cm = a4_h_cm - margin_cm - r * cell_h_cm - MARGIN_CM - MARKER_SIZE_CM
 
@@ -126,13 +127,13 @@ def generate_pdf(output_dir: Path):
                 h_frac = MARKER_SIZE_CM / a4_h_cm
 
                 marker_img = cv2.aruco.generateImageMarker(aruco_dict, marker_id, marker_px)
-                # 흰색 테두리 추가
+                # add white border
                 border_px = cm_to_px(WHITE_BORDER_CM)
                 total_px = marker_px + border_px * 2
                 bordered = np.ones((total_px, total_px), dtype=np.uint8) * 255
                 bordered[border_px:border_px + marker_px, border_px:border_px + marker_px] = marker_img
 
-                # 흰색 테두리 포함 크기로 axes 조정
+                # adjust axes to include the white border in size
                 total_cm = MARKER_SIZE_CM + WHITE_BORDER_CM * 2
                 w_frac_b = total_cm / a4_w_cm
                 h_frac_b = total_cm / a4_h_cm
@@ -143,7 +144,7 @@ def generate_pdf(output_dir: Path):
                 ax.imshow(bordered, cmap='gray', interpolation='nearest')
                 ax.axis('off')
 
-                # ID 라벨
+                # ID label
                 label_x = x_frac + w_frac / 2
                 label_y = y_frac - 0.01
                 fig.text(label_x, label_y, f"ID:{marker_id}  {MARKER_SIZE_CM}cm",

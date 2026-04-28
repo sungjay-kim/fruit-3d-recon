@@ -71,7 +71,7 @@ masks_root = Path("${DENSE_MASKS}")
 fused_path = dense / "fused.ply"
 
 if not fused_path.exists():
-    print("[ERROR] fused.ply 없음")
+    print("[ERROR] fused.ply not found")
     sys.exit(0)
 
 # Build mask lookup: camera_id/image_name -> mask array

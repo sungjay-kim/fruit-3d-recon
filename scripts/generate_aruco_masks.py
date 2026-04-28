@@ -1,15 +1,15 @@
 """
-ArUco 마커 마스크 생성 스크립트
+Generate ArUco marker masks.
 
-입력:
-  runs/{SAMPLE}/images/{1,2,3}/*.png        - 원본 이미지
-  runs/{SAMPLE}/masks/{1,2,3}/*.png.png     - 물체 마스크 (SAM3)
+Inputs:
+  runs/{SAMPLE}/images/{1,2,3}/*.png        - source RGB
+  runs/{SAMPLE}/masks/{1,2,3}/*.png.png     - object masks (from SAM3)
 
-출력:
-  runs/{SAMPLE}/aruco_masks/{1,2,3}/        - 마커만 포함한 binary 마스크
-  runs/{SAMPLE}/sparse_masks/{1,2,3}/       - 물체+마커 합성 마스크 (sparse reconstruction용)
+Outputs:
+  runs/{SAMPLE}/aruco_masks/{1,2,3}/        - marker-only binary masks
+  runs/{SAMPLE}/sparse_masks/{1,2,3}/       - object + marker composite (for sparse reconstruction)
 
-마스크 파일명 포맷: {image_name}.png.png (기존 SAM3 출력과 동일)
+Mask filename format: {image_name}.png.png (matches SAM3's existing convention).
 """
 
 import argparse
@@ -18,10 +18,10 @@ import numpy as np
 from pathlib import Path
 
 ARUCO_DICT = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-MAX_MARKER_ID = 23  # 유효 마커 ID 범위 (0~23)
-MIN_MARKER_SIDE_PX = 50  # 마커 변 길이 최소 픽셀 (노이즈 필터링)
-MAX_MARKER_SIDE_PX = 250  # 마커 변 길이 최대 픽셀 (오탐지 필터링)
-MARKER_PADDING_PX = 15  # 마커 주변 여백 (흰색 테두리 포함)
+MAX_MARKER_ID = 23  # accept marker IDs in [0, 23]
+MIN_MARKER_SIDE_PX = 50  # minimum side length in pixels (noise filter)
+MAX_MARKER_SIDE_PX = 250  # maximum side length in pixels (false-positive filter)
+MARKER_PADDING_PX = 15  # padding around marker (covers the white border)
 
 
 def _make_detector(relaxed: bool = False) -> cv2.aruco.ArucoDetector:
@@ -36,7 +36,7 @@ def _make_detector(relaxed: bool = False) -> cv2.aruco.ArucoDetector:
 
 
 def _preprocess_variants(image_bgr: np.ndarray) -> list[tuple[str, np.ndarray]]:
-    """어두운 UV 조명 환경에서 탐지율을 높이기 위해 다양한 전처리 결과를 반환."""
+    """Return multiple preprocessing variants to boost detection under dim/UV lighting."""
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     b = cv2.split(image_bgr)[0]
     clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8, 8))
@@ -54,7 +54,7 @@ def _preprocess_variants(image_bgr: np.ndarray) -> list[tuple[str, np.ndarray]]:
 
 
 def detect_aruco_mask(image_bgr: np.ndarray) -> tuple[np.ndarray, int]:
-    """다중 전처리 + 합집합으로 ArUco 마커를 탐지. (mask, n_markers) 반환."""
+    """Detect ArUco markers using a union of preprocessing variants. Returns (mask, n_markers)."""
     h, w = image_bgr.shape[:2]
     mask = np.zeros((h, w), dtype=np.uint8)
     found_ids = {}  # {marker_id: corners}
@@ -89,7 +89,7 @@ def detect_aruco_mask(image_bgr: np.ndarray) -> tuple[np.ndarray, int]:
 
 
 def load_object_mask(mask_path: Path) -> np.ndarray | None:
-    """물체 마스크를 로드한다. 없으면 None 반환."""
+    """Load an object mask, or return None if missing."""
     if not mask_path.exists():
         return None
     mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
@@ -106,7 +106,7 @@ def process_sample(sample: str, runs_root: Path, object_masks_dir: str | None = 
     sparse_masks_root = run_dir / "sparse_masks"
 
     if not images_root.exists():
-        print(f"[ERROR] images 디렉토리 없음: {images_root}")
+        print(f"[ERROR] images directory not found: {images_root}")
         return
 
     total_images = 0
@@ -129,28 +129,23 @@ def process_sample(sample: str, runs_root: Path, object_masks_dir: str | None = 
             total_images += 1
             mask_filename = img_path.name + ".png"  # {image}.png.png
 
-            # 원본 이미지 로드
             img_bgr = cv2.imread(str(img_path))
             if img_bgr is None:
-                print(f"  [WARN] 이미지 로드 실패: {img_path.name}")
+                print(f"  [WARN] failed to load image: {img_path.name}")
                 continue
 
-            # ArUco 마커 마스크 생성 (다중 전처리 합집합)
             aruco_mask, n_markers = detect_aruco_mask(img_bgr)
             if n_markers:
                 cam_detected += n_markers
                 total_detected += n_markers
 
-            # aruco_masks/ 저장
             cv2.imwrite(str(aruco_cam_dir / mask_filename), aruco_mask)
 
-            # 물체 마스크 로드 (있으면)
             obj_mask_path = masks_root / cam / mask_filename
             obj_mask = load_object_mask(obj_mask_path)
 
-            # sparse_masks/ = 물체 | ArUco
+            # sparse_masks = object | ArUco
             if obj_mask is not None:
-                # 크기 맞추기
                 if obj_mask.shape != aruco_mask.shape:
                     aruco_mask = cv2.resize(aruco_mask, (obj_mask.shape[1], obj_mask.shape[0]),
                                             interpolation=cv2.INTER_NEAREST)
@@ -160,26 +155,26 @@ def process_sample(sample: str, runs_root: Path, object_masks_dir: str | None = 
 
             cv2.imwrite(str(sparse_cam_dir / mask_filename), sparse_mask)
 
-        print(f"  CAM {cam}: {len(image_files)}개 이미지, 총 {cam_detected}개 마커 탐지 (평균 {cam_detected/max(len(image_files),1):.1f}개/이미지)")
+        print(f"  CAM {cam}: {len(image_files)} images, {cam_detected} markers detected (avg {cam_detected/max(len(image_files),1):.1f}/image)")
 
-    print(f"\n완료: {total_images}개 이미지 처리, 총 {total_detected}개 마커 탐지 (평균 {total_detected/max(total_images,1):.1f}개/이미지)")
+    print(f"\nDone: processed {total_images} images, detected {total_detected} markers (avg {total_detected/max(total_images,1):.1f}/image)")
     print(f"  aruco_masks/  → {aruco_masks_root}")
     print(f"  sparse_masks/ → {sparse_masks_root}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ArUco 마커 마스크 생성")
-    parser.add_argument("--sample", required=True, help="샘플 이름 (예: 20260318_test)")
-    parser.add_argument("--runs-root", default=None, help="runs 디렉토리 경로 (기본: 스크립트 위치/runs)")
+    parser = argparse.ArgumentParser(description="Generate ArUco marker masks")
+    parser.add_argument("--sample", required=True, help="sample name (e.g. 20260318_test)")
+    parser.add_argument("--runs-root", default=None, help="runs directory (default: <repo>/runs)")
     parser.add_argument("--object-masks-dir", default=None,
-                        help="원본 물체 마스크 경로 (기본: runs/{sample}/object_masks/ 또는 masks/)")
+                        help="path to original object masks (default: runs/{sample}/object_masks/ or masks/)")
     args = parser.parse_args()
 
     script_dir = Path(__file__).parent
     runs_root = Path(args.runs_root) if args.runs_root else script_dir / "runs"
 
-    print(f"샘플: {args.sample}")
-    print(f"runs 경로: {runs_root}")
+    print(f"Sample: {args.sample}")
+    print(f"runs root: {runs_root}")
     process_sample(args.sample, runs_root, args.object_masks_dir)
 
 
