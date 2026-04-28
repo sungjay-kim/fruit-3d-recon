@@ -249,6 +249,6 @@ Tunable via env vars:
 
 ## License
 
-- This repo's code: TBD
+- This repo's code: [MIT](LICENSE)
 - `third_party/colmap_python/read_write_model.py`: COLMAP project (BSD-3)
 - SAM3 has its own license (Meta) — not bundled here, install separately
